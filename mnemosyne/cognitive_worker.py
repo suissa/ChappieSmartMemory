@@ -22,7 +22,7 @@ class CognitiveMemoryWorker:
         self.banks = BankManager(self.data_dir)
         if not self.banks.bank_exists(agent_id):
             self.banks.create_bank(agent_id)
-        self.memory = Mnemosyne(bank=agent_id)
+        self.memory = Mnemosyne(bank=agent_id, db_path=self.banks.get_bank_db_path(agent_id))
 
     @property
     def db_path(self) -> Path:
