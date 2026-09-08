@@ -71,6 +71,7 @@ Documentation = "https://github.com/AxDSan/mnemosyne/blob/main/docs/README.md"
 mnemosyne-install = "mnemosyne.install:install"
 mnemosyne-uninstall = "mnemosyne.install:uninstall"
 mnemosyne = "mnemosyne.cli:run_cli"
+mnemosyne-cognitive-worker = "mnemosyne.cognitive_worker:main"
 mnemosyne-browser = "mnemosyne.integrations.memory_browser:main"
 mnemosyne-auto-save = "mnemosyne.integrations.auto_save_openwebui:main"
 
