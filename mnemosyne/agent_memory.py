@@ -64,6 +64,8 @@ class CognitiveAgentMemory:
     """Agent-facing cognitive memory boundary."""
 
     REQUESTED = "AgentMemory.Cognitive.Requested"
+    OK = "AgentMemory.Cognitive.Ok"
+    ERROR = "AgentMemory.Cognitive.Error"
 
     def __init__(self, agent_id: str, broker: InMemoryBroker) -> None:
         self.agent_id = agent_id
