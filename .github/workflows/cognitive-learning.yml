@@ -43,7 +43,17 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p artifacts
-          pytest             tests/test_cognitive_learning.py             tests/test_cognitive_protocol.py             tests/test_agent_memory.py             -v             --tb=short             --show-capture=all             --html=artifacts/cognitive-learning-report.html             --self-contained-html             --css=tests/report-dark.css
+          pytest \
+            tests/test_cognitive_learning.py \
+            tests/test_cognitive_protocol.py \
+            tests/test_cognitive_adapter.py \
+            tests/test_agent_memory.py \
+            -v \
+            --tb=short \
+            --show-capture=all \
+            --html=artifacts/cognitive-learning-report.html \
+            --self-contained-html \
+            --css=tests/report-dark.css
 
       - name: Upload dark HTML report
         id: report
@@ -68,7 +78,7 @@ jobs:
             echo
             echo "**Resultado:** $status"
             echo
-            echo "O relatório HTML escuro contém as evidências de memória aprendida, recuperação, correção, persistência após reinício e isolamento por Agent."
+            echo "O relatório HTML escuro contém evidências de memória aprendida, recuperação, correção, persistência após reinício, isolamento por Agent e integração emit/listen -> NDJSON worker."
             echo
             echo "[Baixar relatório HTML](${{ steps.report.outputs.artifact-url }})"
           } >> "$GITHUB_STEP_SUMMARY"
