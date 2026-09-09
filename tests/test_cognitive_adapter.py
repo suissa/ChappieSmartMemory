@@ -79,3 +79,72 @@ def test_adapter_emits_failed_and_propagates_handler_error(tmp_path: Path) -> No
     assert failed[0].correlation_id == "bad-op"
     assert failed[0].payload["operation"] == "erase-everything"
     assert failed[0].payload["error"]["type"] == "ValueError"
+
+
+def test_adapter_restart_preserves_learned_memory(tmp_path: Path) -> None:
+    broker = InMemoryBroker()
+    cognitive = CognitiveAgentMemory("restart-agent", broker)
+    events = EventsAgentMemory("restart-agent", broker)
+    stored = []
+    recalled = []
+    events.listen("AgentMemory.Cognitive.Stored", stored.append)
+    events.listen("AgentMemory.Cognitive.Recalled", recalled.append)
+
+    adapter = CognitiveWorkerAdapter("restart-agent", broker, tmp_path)
+    with adapter:
+        cognitive.emit(
+            {
+                "operation": "remember",
+                "content": "Conhecimento persistente; marcador adapterrestartretention.",
+                "importance": 1.0,
+            },
+            correlation_id="before-restart",
+        )
+
+    with adapter:
+        cognitive.emit(
+            {
+                "operation": "recall",
+                "query": "adapterrestartretention",
+                "top_k": 5,
+            },
+            correlation_id="after-restart",
+        )
+
+    assert len(stored) == 1
+    assert len(recalled) == 1
+    assert recalled[0].correlation_id == "after-restart"
+    contents = [item["content"] for item in recalled[0].payload["result"]["items"]]
+    learned = "Conhecimento persistente; marcador adapterrestartretention."
+    print(
+        "LEARNING_EVIDENCE "
+        + str(
+            {
+                "capability": "emit-listen-adapter-restart",
+                "learned": learned,
+                "recalled_after_restart": contents,
+                "verified": learned in contents,
+            }
+        )
+    )
+    assert learned in contents
+
+
+def test_adapter_does_not_duplicate_listener_after_restart(tmp_path: Path) -> None:
+    broker = InMemoryBroker()
+    cognitive = CognitiveAgentMemory("restart-agent", broker)
+    events = EventsAgentMemory("restart-agent", broker)
+    pongs = []
+    events.listen("AgentMemory.Cognitive.Pong", pongs.append)
+    adapter = CognitiveWorkerAdapter("restart-agent", broker, tmp_path)
+
+    adapter.start()
+    adapter.start()
+    cognitive.emit({"operation": "ping"}, correlation_id="first-ping")
+    adapter.close()
+
+    adapter.start()
+    cognitive.emit({"operation": "ping"}, correlation_id="second-ping")
+    adapter.close()
+
+    assert [event.correlation_id for event in pongs] == ["first-ping", "second-ping"]
