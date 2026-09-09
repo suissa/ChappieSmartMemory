@@ -79,3 +79,49 @@ def test_adapter_emits_failed_and_propagates_handler_error(tmp_path: Path) -> No
     assert failed[0].correlation_id == "bad-op"
     assert failed[0].payload["operation"] == "erase-everything"
     assert failed[0].payload["error"]["type"] == "ValueError"
+
+
+def test_adapter_restarts_worker_that_died_before_next_request(tmp_path: Path) -> None:
+    broker = InMemoryBroker()
+    cognitive = CognitiveAgentMemory("restart-agent", broker)
+    events = EventsAgentMemory("restart-agent", broker)
+    pong = []
+    events.listen("AgentMemory.Cognitive.Pong", pong.append)
+
+    adapter = CognitiveWorkerAdapter("restart-agent", broker, tmp_path).start()
+    try:
+        first_process = adapter._process
+        assert first_process is not None
+        first_pid = first_process.pid
+
+        first_process.terminate()
+        first_process.wait(timeout=10)
+
+        cognitive.emit({"operation": "ping"}, correlation_id="ping-after-death")
+
+        assert adapter._process is not None
+        assert adapter._process.poll() is None
+        assert adapter._process.pid != first_pid
+        assert len(pong) == 1
+        assert pong[0].correlation_id == "ping-after-death"
+        assert pong[0].payload["result"]["agent_id"] == "restart-agent"
+    finally:
+        adapter.close()
+
+
+def test_adapter_start_and_close_are_idempotent(tmp_path: Path) -> None:
+    broker = InMemoryBroker()
+    adapter = CognitiveWorkerAdapter("lifecycle-agent", broker, tmp_path)
+
+    adapter.start()
+    first_process = adapter._process
+    first_unsubscribe = adapter._unsubscribe
+    adapter.start()
+
+    assert adapter._process is first_process
+    assert adapter._unsubscribe is first_unsubscribe
+
+    adapter.close()
+    adapter.close()
+    assert adapter._process is None
+    assert adapter._unsubscribe is None
