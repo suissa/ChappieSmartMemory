@@ -174,7 +174,7 @@ def test_agent_learns_an_explicit_correction(tmp_path: Path) -> None:
         assert correction["ok"], correction
         assert correction["result"]["correction_of"] == original_id
 
-        recalled = contents(
+        corrected_recall = contents(
             send(
                 process,
                 {
@@ -184,9 +184,39 @@ def test_agent_learns_an_explicit_correction(tmp_path: Path) -> None:
                 },
             )
         )
+        old_recall = contents(
+            send(
+                process,
+                {
+                    "id": "recall-old-belief",
+                    "method": "recall",
+                    "params": {"query": "oldpaymentbelief", "top_k": 5},
+                },
+            )
+        )
 
-    evidence("explicit-correction", learned=corrected, recalled=recalled)
-    assert corrected in recalled
+    evidence("explicit-correction", learned=corrected, recalled=corrected_recall)
+    assert corrected in corrected_recall
+    assert previous not in old_recall
+
+
+def test_correction_requires_an_existing_target(tmp_path: Path) -> None:
+    with worker(tmp_path, "support-agent") as process:
+        response = send(
+            process,
+            {
+                "id": "correct-missing",
+                "method": "correct",
+                "params": {
+                    "content": "Nova verdade",
+                    "correction_of": "missing-memory-id",
+                },
+            },
+        )
+
+    assert response["ok"] is False
+    assert response["error"]["type"] == "ValueError"
+    assert "does not exist" in response["error"]["message"]
 
 
 def test_learning_is_private_to_its_agent(tmp_path: Path) -> None:
