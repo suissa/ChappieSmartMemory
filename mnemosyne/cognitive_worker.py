@@ -35,26 +35,34 @@ class CognitiveMemoryWorker:
             return self.banks.get_bank_stats(self.agent_id)
         if method == "remember":
             assert isinstance(params, RememberRequest)
+            metadata = dict(params.metadata or {})
+            metadata.setdefault("agent_session_id", params.session_id)
             memory_id = self.memory.remember(
-                params.content, source=params.source, importance=params.importance,
-                session_id=params.session_id, scope=params.scope,
-                metadata=params.metadata or {},
+                params.content,
+                source=params.source,
+                importance=params.importance,
+                scope=params.scope,
+                metadata=metadata,
             )
             return {"memory_id": memory_id, "agent_id": self.agent_id}
         if method == "recall":
             assert isinstance(params, RecallRequest)
-            results = self.memory.recall(
-                params.query, top_k=params.top_k, session_id=params.session_id, scope=params.scope,
-            )
+            results = self.memory.recall(params.query, top_k=params.top_k)
             return {"items": results, "agent_id": self.agent_id}
         if method == "correct":
             assert isinstance(params, CorrectRequest)
             metadata = dict(params.metadata or {})
-            metadata.update({"correction_of": params.correction_of,
-                             "correction_protocol": PROTOCOL_VERSION})
+            metadata.update({
+                "agent_session_id": params.session_id,
+                "correction_of": params.correction_of,
+                "correction_protocol": PROTOCOL_VERSION,
+            })
             memory_id = self.memory.remember(
-                params.content, source=params.source, importance=params.importance,
-                session_id=params.session_id, scope=params.scope, metadata=metadata,
+                params.content,
+                source=params.source,
+                importance=params.importance,
+                scope=params.scope,
+                metadata=metadata,
             )
             return {"memory_id": memory_id, "correction_of": params.correction_of,
                     "agent_id": self.agent_id}
