@@ -50,16 +50,20 @@ class CognitiveWorkerAdapter:
         self._unsubscribe = None
         self._lock = RLock()
 
+    def _ensure_worker_locked(self) -> subprocess.Popen[str]:
+        if self._process is None or self._process.poll() is not None:
+            self._process = subprocess.Popen(
+                self.command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        return self._process
+
     def start(self) -> "CognitiveWorkerAdapter":
         with self._lock:
-            if self._process is None or self._process.poll() is not None:
-                self._process = subprocess.Popen(
-                    self.command,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
+            self._ensure_worker_locked()
             if self._unsubscribe is None:
                 self._unsubscribe = self.broker.listen(
                     self.agent_id,
@@ -120,6 +124,7 @@ class CognitiveWorkerAdapter:
         }
         with self._lock:
             try:
+                self._ensure_worker_locked()
                 response = self._request(request)
             except Exception as error:
                 self._fail(event, operation, str(error), error_type=type(error).__name__)
