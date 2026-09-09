@@ -141,21 +141,17 @@ def test_same_action_effect_is_deduplicated_across_worker_restart(tmp_path: Path
     cognitive = CognitiveAgentMemory("retry-agent", broker)
     events = EventsAgentMemory("retry-agent", broker)
     stored = []
-    recalled = []
     events.listen("AgentMemory.Cognitive.Stored", stored.append)
-    events.listen("AgentMemory.Cognitive.Recalled", recalled.append)
 
     adapter = CognitiveWorkerAdapter("retry-agent", broker, tmp_path).start()
     key = _effect("Action.PreferenceDetected:01JTEST", "preference-update")
+    payload = {
+        "operation": "remember",
+        "content": "Primeiro efeito; marcador originalactioneffect.",
+        **key,
+    }
     try:
-        cognitive.emit(
-            {
-                "operation": "remember",
-                "content": "Primeiro efeito; marcador originalactioneffect.",
-                **key,
-            },
-            correlation_id="effect-first",
-        )
+        cognitive.emit(payload, correlation_id="effect-first")
         original_memory_id = stored[-1].payload["result"]["memory_id"]
         assert stored[-1].payload["result"]["deduplicated"] is False
 
@@ -164,27 +160,52 @@ def test_same_action_effect_is_deduplicated_across_worker_restart(tmp_path: Path
         process.terminate()
         process.wait(timeout=10)
 
+        cognitive.emit(payload, correlation_id="effect-retry")
+        assert stored[-1].payload["result"]["memory_id"] == original_memory_id
+        assert stored[-1].payload["result"]["deduplicated"] is True
+    finally:
+        adapter.close()
+
+
+def test_same_effect_identity_with_different_payload_is_rejected(tmp_path: Path) -> None:
+    broker = InMemoryBroker()
+    cognitive = CognitiveAgentMemory("conflict-agent", broker)
+    events = EventsAgentMemory("conflict-agent", broker)
+    failed = []
+    recalled = []
+    events.listen(FAILED_EVENT, failed.append)
+    events.listen("AgentMemory.Cognitive.Recalled", recalled.append)
+    key = _effect("Action.PreferenceDetected:01JCONFLICT", "preference-update")
+
+    with CognitiveWorkerAdapter("conflict-agent", broker, tmp_path):
         cognitive.emit(
             {
                 "operation": "remember",
-                "content": "Conteudo diferente que NAO pode ser aplicado; marcador duplicatedactioneffect.",
+                "content": "Payload original; marcador originalidentitypayload.",
                 **key,
             },
-            correlation_id="effect-retry",
+            correlation_id="conflict-first",
         )
-        assert stored[-1].payload["result"]["memory_id"] == original_memory_id
-        assert stored[-1].payload["result"]["deduplicated"] is True
+
+        with pytest.raises(RuntimeError, match="idempotency key conflict"):
+            cognitive.emit(
+                {
+                    "operation": "remember",
+                    "content": "Payload diferente; marcador conflictingidentitypayload.",
+                    **key,
+                },
+                correlation_id="conflict-second",
+            )
 
         cognitive.emit(
-            {"operation": "recall", "query": "duplicatedactioneffect", "top_k": 5},
-            correlation_id="verify-no-duplicate",
+            {"operation": "recall", "query": "conflictingidentitypayload", "top_k": 5},
+            correlation_id="verify-conflict-not-written",
         )
-        duplicate_contents = [
-            item["content"] for item in recalled[-1].payload["result"]["items"]
-        ]
-        assert all("duplicatedactioneffect" not in content for content in duplicate_contents)
-    finally:
-        adapter.close()
+
+    assert failed[-1].correlation_id == "conflict-second"
+    assert "idempotency key conflict" in failed[-1].payload["error"]["message"]
+    contents = [item["content"] for item in recalled[-1].payload["result"]["items"]]
+    assert all("conflictingidentitypayload" not in content for content in contents)
 
 
 def test_adapter_start_and_close_are_idempotent(tmp_path: Path) -> None:
