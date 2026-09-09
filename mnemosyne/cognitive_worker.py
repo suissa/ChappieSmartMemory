@@ -37,13 +37,18 @@ class CognitiveMemoryWorker:
             assert isinstance(params, RememberRequest)
             metadata = dict(params.metadata or {})
             metadata.setdefault("agent_session_id", params.session_id)
+            # One bank belongs to one Agent. Map the public Agent scope to
+            # Mnemosyne's bank-local global scope so it remains visible across
+            # any future internal sessions without crossing Agent boundaries.
             memory_id = self.memory.remember(
                 params.content,
                 source=params.source,
                 importance=params.importance,
-                scope=params.scope,
+                scope="global",
                 metadata=metadata,
             )
+            if memory_id is None:
+                raise ValueError("memory was rejected by the Mnemosyne write filter")
             return {"memory_id": memory_id, "agent_id": self.agent_id}
         if method == "recall":
             assert isinstance(params, RecallRequest)
@@ -51,6 +56,8 @@ class CognitiveMemoryWorker:
             return {"items": results, "agent_id": self.agent_id}
         if method == "correct":
             assert isinstance(params, CorrectRequest)
+            if self.memory.get(params.correction_of) is None:
+                raise ValueError(f"correction target does not exist: {params.correction_of}")
             metadata = dict(params.metadata or {})
             metadata.update({
                 "agent_session_id": params.session_id,
@@ -61,9 +68,13 @@ class CognitiveMemoryWorker:
                 params.content,
                 source=params.source,
                 importance=params.importance,
-                scope=params.scope,
+                scope="global",
                 metadata=metadata,
             )
+            if memory_id is None:
+                raise ValueError("corrected memory was rejected by the Mnemosyne write filter")
+            if not self.memory.invalidate(params.correction_of, replacement_id=memory_id):
+                raise RuntimeError(f"failed to supersede correction target: {params.correction_of}")
             return {"memory_id": memory_id, "correction_of": params.correction_of,
                     "agent_id": self.agent_id}
         if method == "close":
@@ -102,4 +113,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
