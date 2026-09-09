@@ -1,0 +1,45 @@
+{
+  "protocol": "1.0",
+  "description": "Language-neutral conformance vectors for the Agent-scoped cognitive memory NDJSON worker.",
+  "request_vectors": [
+    {
+      "name": "ping",
+      "request": {"protocol": "1.0", "id": "ping-1", "method": "ping"},
+      "expect": {"ok": true, "same_id": true}
+    },
+    {
+      "name": "reject-unsupported-protocol",
+      "request": {"protocol": "9.9", "id": "bad-protocol", "method": "ping"},
+      "expect": {"ok": false, "same_id": true, "error_type": "ValueError"}
+    },
+    {
+      "name": "reject-session-filter-on-recall",
+      "request": {"protocol": "1.0", "id": "bad-session", "method": "recall", "params": {"query": "x", "session_id": "other"}},
+      "expect": {"ok": false, "same_id": true, "error_type": "ValueError"}
+    },
+    {
+      "name": "reject-non-agent-scope",
+      "request": {"protocol": "1.0", "id": "bad-scope", "method": "remember", "params": {"content": "x", "scope": "global"}},
+      "expect": {"ok": false, "same_id": true, "error_type": "ValueError"}
+    },
+    {
+      "name": "reject-invalid-top-k",
+      "request": {"protocol": "1.0", "id": "bad-top-k", "method": "recall", "params": {"query": "x", "top_k": 0}},
+      "expect": {"ok": false, "same_id": true, "error_type": "ValueError"}
+    }
+  ],
+  "stateful_scenarios": [
+    {
+      "name": "remember-recall-correct",
+      "agent_id": "conformance-agent",
+      "original": "Cliente prefere boleto; marcador conformanceoldbelief.",
+      "corrected": "Cliente prefere Pix; marcador conformancenewbelief."
+    },
+    {
+      "name": "agent-isolation",
+      "agent_a": "conformance-agent-a",
+      "agent_b": "conformance-agent-b",
+      "content": "Segredo do agent A; marcador conformanceprivateknowledge."
+    }
+  ]
+}
