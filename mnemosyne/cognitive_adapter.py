@@ -165,4 +165,4 @@ class CognitiveWorkerAdapter:
         )
 
 
-__all__ = ["CognitiveWorkerAdapter", "FAILED_EVENT"]
+__all__ = ["FAILED_EVENT", "CognitiveWorkerAdapter"]
