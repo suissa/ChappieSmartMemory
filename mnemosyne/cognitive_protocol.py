@@ -16,6 +16,8 @@ class RememberRequest:
     session_id: str = "default"
     scope: str = "agent"
     metadata: dict[str, Any] | None = None
+    action_id: str | None = None
+    memory_operation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,8 @@ class CorrectRequest:
     session_id: str = "default"
     scope: str = "agent"
     metadata: dict[str, Any] | None = None
+    action_id: str | None = None
+    memory_operation_id: str | None = None
 
 
 def _string(value: Any, field: str, limit: int) -> str:
@@ -41,6 +45,12 @@ def _string(value: Any, field: str, limit: int) -> str:
     if len(value) > limit:
         raise ValueError(f"{field} exceeds {limit} characters")
     return value
+
+
+def _optional_string(value: Any, field: str, limit: int) -> str | None:
+    if value is None:
+        return None
+    return _string(value, field, limit)
 
 
 def _importance(value: Any) -> float:
@@ -82,6 +92,10 @@ def parse_request(payload: dict[str, Any]) -> tuple[str, Any]:
             session_id=session_id,
             scope=scope,
             metadata=params.get("metadata"),
+            action_id=_optional_string(params.get("action_id"), "action_id", 512),
+            memory_operation_id=_optional_string(
+                params.get("memory_operation_id"), "memory_operation_id", 512
+            ),
         )
     if method == "recall":
         if "session_id" in params or "scope" in params:
@@ -106,6 +120,10 @@ def parse_request(payload: dict[str, Any]) -> tuple[str, Any]:
             session_id=session_id,
             scope=scope,
             metadata=params.get("metadata"),
+            action_id=_optional_string(params.get("action_id"), "action_id", 512),
+            memory_operation_id=_optional_string(
+                params.get("memory_operation_id"), "memory_operation_id", 512
+            ),
         )
     if method in {"stats", "ping", "close"}:
         return method, params
