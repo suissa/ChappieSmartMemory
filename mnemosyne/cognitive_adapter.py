@@ -21,6 +21,7 @@ _RESULT_EVENTS = {
     "ping": "AgentMemory.Cognitive.Pong",
 }
 FAILED_EVENT = "AgentMemory.Cognitive.Failed"
+_MUTATING_OPERATIONS = {"remember", "correct"}
 
 
 class CognitiveWorkerAdapter:
@@ -50,16 +51,28 @@ class CognitiveWorkerAdapter:
         self._unsubscribe = None
         self._lock = RLock()
 
+    def _ensure_worker_locked(self) -> subprocess.Popen[str]:
+        if self._process is None or self._process.poll() is not None:
+            self._process = subprocess.Popen(
+                self.command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        return self._process
+
+    def _restart_worker_locked(self) -> subprocess.Popen[str]:
+        process = self._process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+        self._process = None
+        return self._ensure_worker_locked()
+
     def start(self) -> "CognitiveWorkerAdapter":
         with self._lock:
-            if self._process is None or self._process.poll() is not None:
-                self._process = subprocess.Popen(
-                    self.command,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
+            self._ensure_worker_locked()
             if self._unsubscribe is None:
                 self._unsubscribe = self.broker.listen(
                     self.agent_id,
@@ -78,7 +91,10 @@ class CognitiveWorkerAdapter:
             if process is None or process.poll() is not None:
                 return
             try:
-                self._request({"protocol": PROTOCOL_VERSION, "id": "adapter-close", "method": "close"}, process=process)
+                self._request(
+                    {"protocol": PROTOCOL_VERSION, "id": "adapter-close", "method": "close"},
+                    process=process,
+                )
             finally:
                 process.wait(timeout=10)
 
@@ -88,7 +104,12 @@ class CognitiveWorkerAdapter:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def _request(self, payload: dict[str, Any], *, process: subprocess.Popen[str] | None = None) -> dict[str, Any]:
+    def _request(
+        self,
+        payload: dict[str, Any],
+        *,
+        process: subprocess.Popen[str] | None = None,
+    ) -> dict[str, Any]:
         active = process or self._process
         if active is None or active.poll() is not None or active.stdin is None or active.stdout is None:
             raise RuntimeError("cognitive worker is not running")
@@ -102,6 +123,16 @@ class CognitiveWorkerAdapter:
             raise RuntimeError(f"cognitive worker terminated without response: {stderr}")
         return json.loads(line)
 
+    def _validate_idempotency(self, operation: str, payload: dict[str, Any]) -> None:
+        if operation not in _MUTATING_OPERATIONS:
+            return
+        action_id = payload.get("action_id")
+        memory_operation_id = payload.get("memory_operation_id")
+        if not isinstance(action_id, str) or not action_id.strip():
+            raise ValueError(f"{operation} requires action_id")
+        if not isinstance(memory_operation_id, str) or not memory_operation_id.strip():
+            raise ValueError(f"{operation} requires memory_operation_id")
+
     def _handle(self, event: AgentMemoryEvent) -> None:
         payload = dict(event.payload)
         operation = payload.pop("operation", None)
@@ -111,6 +142,11 @@ class CognitiveWorkerAdapter:
         if operation not in _RESULT_EVENTS:
             self._fail(event, operation, f"unsupported cognitive operation: {operation}")
             raise ValueError(f"unsupported cognitive operation: {operation}")
+        try:
+            self._validate_idempotency(operation, payload)
+        except Exception as error:
+            self._fail(event, operation, str(error), error_type=type(error).__name__)
+            raise
 
         request = {
             "protocol": PROTOCOL_VERSION,
@@ -120,10 +156,19 @@ class CognitiveWorkerAdapter:
         }
         with self._lock:
             try:
+                self._ensure_worker_locked()
                 response = self._request(request)
-            except Exception as error:
-                self._fail(event, operation, str(error), error_type=type(error).__name__)
-                raise
+            except Exception:
+                # Requests with an explicit Action/effect identity are safe to
+                # replay: the worker deduplicates them and reconstructs a result
+                # from persisted metadata if it died after committing the memory
+                # but before recording its idempotency ledger entry.
+                if operation in _MUTATING_OPERATIONS:
+                    self._restart_worker_locked()
+                    response = self._request(request)
+                else:
+                    self._restart_worker_locked()
+                    response = self._request(request)
 
         if response.get("id") != event.correlation_id:
             message = "cognitive worker response correlation id mismatch"
