@@ -2,37 +2,76 @@
 
 The Agent-facing contract uses only two operations:
 
-- emit: sends a memory request or event through the in-memory broker.
-- listen: registers a handler for events belonging to the same Agent.
+- `emit`: sends a cognitive request or an Agent memory event.
+- `listen`: registers a handler for events belonging to the same Agent.
 
-The Python Mnemosyne worker remains behind this boundary. A runtime adapter listens to
-AgentMemory.Cognitive.Requested, calls the worker through NDJSON, and emits the
-result back as an event such as AgentMemory.Cognitive.Stored. The Agent therefore
-does not access SQLite or import Python.
+`CognitiveAgentMemory` and `EventsAgentMemory` share an `InMemoryBroker`.
+The broker keys listeners by `agent_id` and event type, so one Agent cannot
+observe another Agent's memory events.
 
-Every Agent receives its own CognitiveAgentMemory, EventsAgentMemory, broker
-namespace, and Mnemosyne database. The broker filters by agent_id, so an event
-from one Agent cannot reach another Agent's listener.
+## Executable Python adapter
 
-Example:
+`CognitiveMemoryAdapter` is the reference implementation of the complete flow:
 
-    from mnemosyne.agent_memory import (
-        CognitiveAgentMemory,
-        EventsAgentMemory,
-        InMemoryBroker,
-    )
+```text
+CognitiveAgentMemory.emit
+    -> InMemoryBroker
+    -> CognitiveMemoryAdapter
+    -> Mnemosyne
+    -> EventsAgentMemory.emit
+    -> Agent listener
+```
 
-    broker = InMemoryBroker()
-    cognitive = CognitiveAgentMemory("sales-agent", broker)
-    events = EventsAgentMemory("sales-agent", broker)
+The adapter listens to `AgentMemory.Cognitive.Requested`. Successful operations
+emit `AgentMemory.Cognitive.Ok`; rejected operations emit
+`AgentMemory.Cognitive.Error`. Both preserve the original `correlation_id`.
 
-    events.listen("AgentMemory.Cognitive.Stored", handle_memory_stored)
-    cognitive.emit({
-        "operation": "remember",
-        "content": "O cliente prefere Pix",
-        "importance": 0.9,
-    })
+```python
+from pathlib import Path
 
-The current broker is synchronous and in-process. Its handler failure is propagated
-to the Agent so the runtime can apply its self-healing policy. The same emit/listen
-contract can later be implemented by a UbiQ transport.
+from mnemosyne.agent_memory import (
+    CognitiveAgentMemory,
+    EventsAgentMemory,
+    InMemoryBroker,
+)
+from mnemosyne.cognitive_adapter import CognitiveMemoryAdapter
+from mnemosyne.cognitive_worker import CognitiveMemoryWorker
+
+agent_id = "sales-agent"
+broker = InMemoryBroker()
+cognitive = CognitiveAgentMemory(agent_id, broker)
+events = EventsAgentMemory(agent_id, broker)
+worker = CognitiveMemoryWorker(agent_id, Path("agents/sales-agent/cognitive"))
+adapter = CognitiveMemoryAdapter(worker, cognitive, events)
+
+events.listen(CognitiveAgentMemory.OK, handle_memory_result)
+events.listen(CognitiveAgentMemory.ERROR, handle_memory_error)
+
+cognitive.emit({
+    "operation": "remember",
+    "content": "O cliente prefere Pix",
+    "importance": 0.9,
+})
+```
+
+Supported operations are `remember`, `recall`, `correct`, `stats`, and
+`ping`. Calling `adapter.close()` removes its listener.
+
+## Zig runtime
+
+The Zig runtime keeps this same event contract. Its adapter replaces the direct
+Python call with the existing NDJSON child-process client:
+
+```text
+CognitiveAgentMemory.emit
+    -> Zig in-memory broker
+    -> Zig Mnemosyne adapter
+    -> NDJSON worker process
+    -> EventsAgentMemory.emit
+```
+
+The Agent never imports Python and never reads the Mnemosyne SQLite schema.
+It only emits requests and listens for correlated Ok/Error events. The same
+contract can later be transported by UbiQ without changing Agent behavior.
+
+Every Agent owns its own memory namespace, worker, and SQLite bank.
