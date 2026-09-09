@@ -1,0 +1,78 @@
+name: Cognitive learning evidence
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: cognitive-learning-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate-learning:
+    name: Validate learned memory
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MNEMOSYNE_NO_EMBEDDINGS: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      - name: Run cognitive learning evidence
+        id: learning-tests
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts
+          pytest             tests/test_cognitive_learning.py             tests/test_cognitive_protocol.py             tests/test_agent_memory.py             -v             --tb=short             --show-capture=all             --html=artifacts/cognitive-learning-report.html             --self-contained-html             --css=tests/report-dark.css
+
+      - name: Upload dark HTML report
+        id: report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cognitive-learning-report-${{ github.run_number }}
+          path: artifacts/cognitive-learning-report.html
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Add report to job summary
+        if: always()
+        run: |
+          if [ "${{ steps.learning-tests.outcome }}" = "success" ]; then
+            status="PASSOU"
+          else
+            status="FALHOU"
+          fi
+          {
+            echo "## Cognitive learning evidence"
+            echo
+            echo "**Resultado:** $status"
+            echo
+            echo "O relatório HTML escuro contém as evidências de memória aprendida, recuperação, correção, persistência após reinício e isolamento por Agent."
+            echo
+            echo "[Baixar relatório HTML](${{ steps.report.outputs.artifact-url }})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce cognitive learning gate
+        if: steps.learning-tests.outcome != 'success'
+        run: exit 1
