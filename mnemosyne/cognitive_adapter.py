@@ -6,8 +6,9 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from threading import RLock
-from typing import Any
+from queue import Empty, Queue
+from threading import RLock, Thread
+from typing import Any, TextIO
 
 from mnemosyne.agent_memory import AgentMemoryEvent, CognitiveAgentMemory, InMemoryBroker
 from mnemosyne.cognitive_protocol import PROTOCOL_VERSION
@@ -34,10 +35,14 @@ class CognitiveWorkerAdapter:
         data_dir: Path,
         *,
         command: list[str] | None = None,
+        request_timeout: float = 10.0,
     ) -> None:
+        if request_timeout <= 0:
+            raise ValueError("request_timeout must be greater than zero")
         self.agent_id = agent_id
         self.broker = broker
         self.data_dir = Path(data_dir)
+        self.request_timeout = request_timeout
         self.command = command or [
             sys.executable,
             "-m",
@@ -62,11 +67,20 @@ class CognitiveWorkerAdapter:
             )
         return self._process
 
+    def _stop_process(self, process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+
     def _restart_worker_locked(self) -> subprocess.Popen[str]:
         process = self._process
-        if process is not None and process.poll() is None:
-            process.terminate()
-            process.wait(timeout=10)
+        if process is not None:
+            self._stop_process(process)
         self._process = None
         return self._ensure_worker_locked()
 
@@ -95,14 +109,36 @@ class CognitiveWorkerAdapter:
                     {"protocol": PROTOCOL_VERSION, "id": "adapter-close", "method": "close"},
                     process=process,
                 )
-            finally:
-                process.wait(timeout=10)
+            except Exception:
+                self._stop_process(process)
+                return
+            self._stop_process(process)
 
     def __enter__(self) -> "CognitiveWorkerAdapter":
         return self.start()
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+    def _readline_with_timeout(self, stream: TextIO) -> str:
+        result: Queue[str | BaseException] = Queue(maxsize=1)
+
+        def read() -> None:
+            try:
+                result.put(stream.readline())
+            except BaseException as error:
+                result.put(error)
+
+        Thread(target=read, daemon=True).start()
+        try:
+            value = result.get(timeout=self.request_timeout)
+        except Empty as error:
+            raise TimeoutError(
+                f"cognitive worker response timed out after {self.request_timeout:g}s"
+            ) from error
+        if isinstance(value, BaseException):
+            raise value
+        return value
 
     def _request(
         self,
@@ -115,7 +151,7 @@ class CognitiveWorkerAdapter:
             raise RuntimeError("cognitive worker is not running")
         active.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
         active.stdin.flush()
-        line = active.stdout.readline()
+        line = self._readline_with_timeout(active.stdout)
         if not line:
             stderr = ""
             if active.stderr is not None:
@@ -155,20 +191,26 @@ class CognitiveWorkerAdapter:
             "params": payload,
         }
         with self._lock:
-            try:
-                self._ensure_worker_locked()
-                response = self._request(request)
-            except Exception:
-                # Requests with an explicit Action/effect identity are safe to
-                # replay: the worker deduplicates them and reconstructs a result
-                # from persisted metadata if it died after committing the memory
-                # but before recording its idempotency ledger entry.
-                if operation in _MUTATING_OPERATIONS:
-                    self._restart_worker_locked()
+            last_error: Exception | None = None
+            for attempt in range(2):
+                try:
+                    if attempt == 0:
+                        self._ensure_worker_locked()
+                    else:
+                        self._restart_worker_locked()
                     response = self._request(request)
-                else:
-                    self._restart_worker_locked()
-                    response = self._request(request)
+                    break
+                except Exception as error:
+                    last_error = error
+            else:
+                assert last_error is not None
+                self._fail(
+                    event,
+                    operation,
+                    str(last_error),
+                    error_type=type(last_error).__name__,
+                )
+                raise last_error
 
         if response.get("id") != event.correlation_id:
             message = "cognitive worker response correlation id mismatch"
