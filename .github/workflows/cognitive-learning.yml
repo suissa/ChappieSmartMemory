@@ -48,6 +48,7 @@ jobs:
             tests/test_cognitive_protocol.py \
             tests/test_cognitive_conformance_vectors.py \
             tests/test_cognitive_adapter.py \
+            tests/test_cognitive_adapter_timeout.py \
             tests/test_agent_memory.py \
             -v \
             --tb=short \
@@ -79,7 +80,7 @@ jobs:
             echo
             echo "**Resultado:** $status"
             echo
-            echo "O relatório HTML escuro contém as evidências de memória aprendida, recuperação, correção, persistência após reinício, isolamento por Agent, conformidade do protocolo NDJSON 1.0 e round-trip do adapter broker-worker."
+            echo "O relatório HTML escuro contém as evidências de memória aprendida, recuperação, correção, persistência após reinício, isolamento por Agent, conformidade do protocolo NDJSON 1.0, round-trip do adapter broker-worker e timeout limitado de workers sem resposta."
             echo
             echo "[Baixar relatório HTML](${{ steps.report.outputs.artifact-url }})"
           } >> "$GITHUB_STEP_SUMMARY"
