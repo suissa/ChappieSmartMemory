@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -118,13 +119,15 @@ def test_adapter_restart_preserves_learned_memory(tmp_path: Path) -> None:
     learned = "Conhecimento persistente; marcador adapterrestartretention."
     print(
         "LEARNING_EVIDENCE "
-        + str(
+        + json.dumps(
             {
                 "capability": "emit-listen-adapter-restart",
                 "learned": learned,
                 "recalled_after_restart": contents,
                 "verified": learned in contents,
-            }
+            },
+            ensure_ascii=False,
+            sort_keys=True,
         )
     )
     assert learned in contents
