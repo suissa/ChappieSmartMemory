@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -41,10 +42,19 @@ class CognitiveMemoryWorker:
                 memory_operation_id TEXT NOT NULL,
                 operation TEXT NOT NULL,
                 result_json TEXT NOT NULL,
+                request_fingerprint TEXT,
                 PRIMARY KEY (action_id, memory_operation_id, operation)
             )
             """
         )
+        columns = {
+            row[1]
+            for row in self.memory.conn.execute("PRAGMA table_info(cognitive_effects)").fetchall()
+        }
+        if "request_fingerprint" not in columns:
+            self.memory.conn.execute(
+                "ALTER TABLE cognitive_effects ADD COLUMN request_fingerprint TEXT"
+            )
         self.memory.conn.commit()
 
     def _effect_key(self, params: RememberRequest | CorrectRequest) -> tuple[str, str] | None:
@@ -54,6 +64,39 @@ class CognitiveMemoryWorker:
             raise ValueError("action_id and memory_operation_id must be provided together")
         return params.action_id, params.memory_operation_id
 
+    def _request_fingerprint(
+        self,
+        operation: str,
+        params: RememberRequest | CorrectRequest,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "operation": operation,
+            "content": params.content,
+            "source": params.source,
+            "importance": params.importance,
+            "session_id": params.session_id,
+            "scope": params.scope,
+            "metadata": params.metadata or {},
+        }
+        if isinstance(params, CorrectRequest):
+            payload["correction_of"] = params.correction_of
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _assert_same_fingerprint(self, stored: str | None, current: str) -> None:
+        # Rows created before fingerprints were introduced are accepted for
+        # backward compatibility. Every new row records a fingerprint.
+        if stored is not None and stored != current:
+            raise ValueError(
+                "idempotency key conflict: effect identity was already used with a different payload"
+            )
+
     def _lookup_effect(
         self,
         operation: str,
@@ -62,15 +105,17 @@ class CognitiveMemoryWorker:
         key = self._effect_key(params)
         if key is None:
             return None
+        fingerprint = self._request_fingerprint(operation, params)
         row = self.memory.conn.execute(
             """
-            SELECT result_json
+            SELECT result_json, request_fingerprint
             FROM cognitive_effects
             WHERE action_id = ? AND memory_operation_id = ? AND operation = ?
             """,
             (key[0], key[1], operation),
         ).fetchone()
         if row is not None:
+            self._assert_same_fingerprint(row[1], fingerprint)
             result = json.loads(row[0])
             result["deduplicated"] = True
             return result
@@ -91,6 +136,9 @@ class CognitiveMemoryWorker:
                 and metadata.get("memory_operation_id") == key[1]
                 and metadata.get("cognitive_operation") == operation
             ):
+                self._assert_same_fingerprint(
+                    metadata.get("cognitive_request_fingerprint"), fingerprint
+                )
                 result: dict[str, Any] = {
                     "memory_id": memory_id,
                     "agent_id": self.agent_id,
@@ -117,12 +165,36 @@ class CognitiveMemoryWorker:
         self.memory.conn.execute(
             """
             INSERT OR IGNORE INTO cognitive_effects (
-                action_id, memory_operation_id, operation, result_json
-            ) VALUES (?, ?, ?, ?)
+                action_id,
+                memory_operation_id,
+                operation,
+                result_json,
+                request_fingerprint
+            ) VALUES (?, ?, ?, ?, ?)
             """,
-            (key[0], key[1], operation, json.dumps(result, ensure_ascii=False, default=str)),
+            (
+                key[0],
+                key[1],
+                operation,
+                json.dumps(result, ensure_ascii=False, default=str),
+                self._request_fingerprint(operation, params),
+            ),
         )
         self.memory.conn.commit()
+
+    def _effect_metadata(
+        self,
+        operation: str,
+        params: RememberRequest | CorrectRequest,
+    ) -> dict[str, Any]:
+        if params.action_id is None:
+            return {}
+        return {
+            "action_id": params.action_id,
+            "memory_operation_id": params.memory_operation_id,
+            "cognitive_operation": operation,
+            "cognitive_request_fingerprint": self._request_fingerprint(operation, params),
+        }
 
     def dispatch(self, method: str, params: Any) -> dict[str, Any]:
         if method == "ping":
@@ -136,14 +208,7 @@ class CognitiveMemoryWorker:
                 return duplicate
             metadata = dict(params.metadata or {})
             metadata.setdefault("agent_session_id", params.session_id)
-            if params.action_id is not None:
-                metadata.update(
-                    {
-                        "action_id": params.action_id,
-                        "memory_operation_id": params.memory_operation_id,
-                        "cognitive_operation": method,
-                    }
-                )
+            metadata.update(self._effect_metadata(method, params))
             memory_id = self.memory.remember(
                 params.content,
                 source=params.source,
@@ -175,14 +240,7 @@ class CognitiveMemoryWorker:
                     "correction_protocol": PROTOCOL_VERSION,
                 }
             )
-            if params.action_id is not None:
-                metadata.update(
-                    {
-                        "action_id": params.action_id,
-                        "memory_operation_id": params.memory_operation_id,
-                        "cognitive_operation": method,
-                    }
-                )
+            metadata.update(self._effect_metadata(method, params))
             memory_id = self.memory.remember(
                 params.content,
                 source=params.source,
